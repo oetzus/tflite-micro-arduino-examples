@@ -11,7 +11,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <ArduinoBLE.h>
-#include <Arduino_LSM9DS1.h>
+#include <Arduino_BMI270_BMM150.h>
 #include <TensorFlowLite.h>
 
 #include <cmath>
@@ -27,6 +27,7 @@ limitations under the License.
 #define BLE_SENSE_UUID(val) ("4798e0f2-" val "-4d68-af64-8a8f5258404e")
 
 #undef MAGIC_WAND_DEBUG
+#define MAGIC_WAND_DEBUG
 
 namespace {
 
@@ -131,8 +132,16 @@ void ReadAccelerometerAndGyroscope(int* new_accelerometer_samples,
   // Keep track of whether we stored any new data
   *new_accelerometer_samples = 0;
   *new_gyroscope_samples = 0;
+  // Limit maximum iterations as it otherwise gets stuck in the while loop
+  const int max_read_iterations = 10;
+  int iteration_index = 0;
   // Loop through new samples and add to buffer
+  //MicroPrintf("Inside ReadAccelerometerAndGyroscope method");
   while (IMU.accelerationAvailable()) {
+    if (iteration_index++ == max_read_iterations) {
+      break;
+    }
+    //MicroPrintf("Inside ReadAccelerometerAndGyroscope while loop");
     const int gyroscope_index = (gyroscope_data_index % gyroscope_data_length);
     gyroscope_data_index += 3;
     float* current_gyroscope_data = &gyroscope_data[gyroscope_index];
@@ -314,7 +323,7 @@ void UpdateOrientation(int new_samples, float* gravity, float* drift) {
 }
 
 bool IsMoving(int samples_before) {
-  constexpr float moving_threshold = 9.0f;
+  constexpr float moving_threshold = 11.0f;
 
   if ((gyroscope_data_index - samples_before) < moving_sample_count) {
     return false;
@@ -343,30 +352,37 @@ bool IsMoving(int samples_before) {
 }
 
 void UpdateStroke(int new_samples, bool* done_just_triggered) {
-  constexpr int minimum_stroke_length = moving_sample_count + 10;
+  constexpr int minimum_stroke_length = moving_sample_count + 20;
   constexpr float minimum_stroke_size = 0.2f;
 
   *done_just_triggered = false;
 
   for (int i = 0; i < new_samples; ++i) {
+    if (*done_just_triggered) {
+      break;  // If movement complete, return from function and discard rest of batch
+    }
     const int current_head = (new_samples - (i + 1));
     const bool is_moving = IsMoving(current_head);
+    //MicroPrintf("IsMoving: %s", is_moving ? "true" : "false");
     const int32_t old_state = *stroke_state;
     if ((old_state == eWaiting) || (old_state == eDone)) {
       if (is_moving) {
         stroke_length = moving_sample_count;
         *stroke_state = eDrawing;
+        //MicroPrintf("Stroke state changed to eDrawing");
       }
     } else if (old_state == eDrawing) {
       if (!is_moving) {
         if (stroke_length > minimum_stroke_length) {
           *stroke_state = eDone;
+          //MicroPrintf("Stroke state changed to eDone");
         } else {
+#ifdef MAGIC_WAND_DEBUG
+          MicroPrintf("stroke length too small: %d", stroke_length);
+#endif  // MAGIC_WAND_DEBUG
           stroke_length = 0;
           *stroke_state = eWaiting;
-#ifdef MAGIC_WAND_DEBUG
-          MicroPrintf("stroke length too small");
-#endif  // MAGIC_WAND_DEBUG
+          //MicroPrintf("Stroke state changed to eWaiting");
         }
       }
     }
@@ -389,6 +405,10 @@ void UpdateStroke(int new_samples, bool* done_just_triggered) {
       continue;
     }
 
+    //if (*done_just_triggered)  {
+    //  MicroPrintf("done_just_triggered = true");
+    //}
+      
     const int start_index =
         ((gyroscope_data_index +
           (gyroscope_data_length - (3 * (stroke_length + current_head)))) %
@@ -505,6 +525,11 @@ void UpdateStroke(int new_samples, bool* done_just_triggered) {
 }  // namespace
 
 void setup() {
+  
+  Serial.begin(9600);
+  while (!Serial);
+  Serial.println("Started");
+
   tflite::InitializeTarget();  // setup serial port
 
   MicroPrintf("Started");
@@ -601,10 +626,12 @@ void setup() {
 }
 
 void loop() {
+  //MicroPrintf("Loop starting");
   BLEDevice central = BLE.central();
 
   // if a central is connected to the peripheral:
   static bool was_connected_last = false;
+  //MicroPrintf("Value of was_connected_last: %s", was_connected_last ? "true" : "false");
   if (central && !was_connected_last) {
     // print the central's BT address:
     MicroPrintf("Connected to central: %s", central.address().c_str());
@@ -614,32 +641,43 @@ void loop() {
   const bool data_available =
       IMU.accelerationAvailable() || IMU.gyroscopeAvailable();
   if (!data_available) {
+    //MicroPrintf("No IMU data available");
     return;
   }
+  //MicroPrintf("IMU data available");
 
   int accelerometer_samples_read;
   int gyroscope_samples_read;
   ReadAccelerometerAndGyroscope(&accelerometer_samples_read,
                                 &gyroscope_samples_read);
-
+  //MicroPrintf("Read IMU data");
+  
+  if (accelerometer_samples_read > 0) {
+    //MicroPrintf("Estimate Gravity Direction");
+    EstimateGravityDirection(current_gravity);
+    //MicroPrintf("Update Velocity");
+    UpdateVelocity(accelerometer_samples_read, current_gravity);
+  }
+  
   bool done_just_triggered = false;
   if (gyroscope_samples_read > 0) {
+    //MicroPrintf("Estimate Gyroscope Drift");
     EstimateGyroscopeDrift(current_gyroscope_drift);
+    //MicroPrintf("Update Orientation");
     UpdateOrientation(gyroscope_samples_read, current_gravity,
                       current_gyroscope_drift);
+    //MicroPrintf("Update Stroke");
     UpdateStroke(gyroscope_samples_read, &done_just_triggered);
+    //MicroPrintf("done_just_triggered after UpdateStroke(): %s", done_just_triggered ? "true" : "false");
     if (central && central.connected()) {
+      //MicroPrintf("Write value to BLE central");
       strokeCharacteristic.writeValue(stroke_struct_buffer,
                                       stroke_struct_byte_count);
     }
   }
 
-  if (accelerometer_samples_read > 0) {
-    EstimateGravityDirection(current_gravity);
-    UpdateVelocity(accelerometer_samples_read, current_gravity);
-  }
-
   if (done_just_triggered) {
+    //MicroPrintf("Rasterize Stroke");
     RasterizeStroke(stroke_points, *stroke_transmit_length, 0.6f, 0.6f,
                     raster_width, raster_height, raster_buffer);
     for (int y = 0; y < raster_height; ++y) {
