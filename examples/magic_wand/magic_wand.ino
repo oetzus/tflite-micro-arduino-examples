@@ -24,7 +24,7 @@ limitations under the License.
 #include "tensorflow/lite/micro/system_setup.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-#define BLE_SENSE_UUID(val) ("4798e0f2-" val "-4d68-af64-8a8f5258404e")
+//#define BLE_SENSE_UUID(val) ("4798e0f2-" val "-4d68-af64-8a8f5258404e")
 
 #undef MAGIC_WAND_DEBUG
 #define MAGIC_WAND_DEBUG
@@ -50,9 +50,12 @@ constexpr int raster_byte_count =
     raster_height * raster_width * raster_channels;
 int8_t raster_buffer[raster_byte_count];
 
-BLEService service(BLE_SENSE_UUID("0000"));
-BLECharacteristic strokeCharacteristic(BLE_SENSE_UUID("300a"), BLERead,
-                                       stroke_struct_byte_count);
+//BLEService service(BLE_SENSE_UUID("0000"));
+BLEService service("180A");
+//BLECharacteristic strokeCharacteristic(BLE_SENSE_UUID("300a"), BLERead,
+//                                       stroke_struct_byte_count);
+BLEUnsignedShortCharacteristic strokeClassCharacteristic("2A19", 
+                               BLERead | BLENotify);
 
 // String to calculate the local and device name
 String name;
@@ -568,9 +571,12 @@ void setup() {
   BLE.setDeviceName(name.c_str());
   BLE.setAdvertisedService(service);
 
-  service.addCharacteristic(strokeCharacteristic);
+  //service.addCharacteristic(strokeCharacteristic);
+  service.addCharacteristic(strokeClassCharacteristic);
 
   BLE.addService(service);
+  
+  BLE.setConnectionInterval(0x00A0, 0x00B0);
 
   BLE.advertise();
 
@@ -669,11 +675,11 @@ void loop() {
     //MicroPrintf("Update Stroke");
     UpdateStroke(gyroscope_samples_read, &done_just_triggered);
     //MicroPrintf("done_just_triggered after UpdateStroke(): %s", done_just_triggered ? "true" : "false");
-    if (central && central.connected()) {
+    //if (central && central.connected()) {
       //MicroPrintf("Write value to BLE central");
-      strokeCharacteristic.writeValue(stroke_struct_buffer,
-                                      stroke_struct_byte_count);
-    }
+    //  strokeCharacteristic.writeValue(stroke_struct_buffer,
+    //                                  stroke_struct_byte_count);
+    //}
   }
 
   if (done_just_triggered) {
@@ -733,5 +739,9 @@ void loop() {
     MicroPrintf("Found %s (%d.%d%%)", labels[max_index],
                 static_cast<int>(max_score_int),
                 static_cast<int>(max_score_frac * 100));
+    
+    if (central && central.connected() && (max_score_int >= 75)) {
+      strokeClassCharacteristic.writeValue(atoi(labels[max_index]));
+    }
   }
 }
