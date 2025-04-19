@@ -29,6 +29,10 @@ limitations under the License.
 #undef MAGIC_WAND_DEBUG
 #define MAGIC_WAND_DEBUG
 
+// Defines kind of usage (productive / training) 
+// Affects BLE settings and what is sent over BLE
+#undef BLE_TRAINING_MODE
+
 namespace {
 
 const int VERSION = 0x00000000;
@@ -50,9 +54,15 @@ constexpr int raster_byte_count =
     raster_height * raster_width * raster_channels;
 int8_t raster_buffer[raster_byte_count];
 
+#ifdef BLE_TRAINING_MODE
 BLEService service(BLE_SENSE_UUID("0000"));
 BLECharacteristic strokeCharacteristic(BLE_SENSE_UUID("300a"), BLERead,
-                                       stroke_struct_byte_count);
+                                       stroke_struct_byte_count);  
+#else
+BLEService service("180A");
+BLEUnsignedShortCharacteristic strokeCharacteristic("2A19", 
+                               BLERead | BLENotify);
+#endif
 
 // String to calculate the local and device name
 String name;
@@ -525,14 +535,19 @@ void UpdateStroke(int new_samples, bool* done_just_triggered) {
 }  // namespace
 
 void setup() {
-  
+#ifdef MAGIC_WAND_DEBUG
   Serial.begin(9600);
   while (!Serial);
   Serial.println("Started");
+#endif  // MAGIC_WAND_DEBUG
 
   tflite::InitializeTarget();  // setup serial port
 
-  MicroPrintf("Started");
+#ifdef BLE_TRAINING_MODE
+  MicroPrintf("Starting in training mode");
+#else
+  MicroPrintf("Starting in productive mode");
+#endif
 
   if (!IMU.begin()) {
     MicroPrintf("Failed to initialized IMU!");
@@ -571,6 +586,10 @@ void setup() {
   service.addCharacteristic(strokeCharacteristic);
 
   BLE.addService(service);
+
+#ifndef BLE_TRAINING_MODE
+  BLE.setConnectionInterval(0x00A0, 0x00B0);
+#endif
 
   BLE.advertise();
 
@@ -669,11 +688,15 @@ void loop() {
     //MicroPrintf("Update Stroke");
     UpdateStroke(gyroscope_samples_read, &done_just_triggered);
     //MicroPrintf("done_just_triggered after UpdateStroke(): %s", done_just_triggered ? "true" : "false");
+
+#ifdef BLE_TRAINING_MODE
     if (central && central.connected()) {
-      //MicroPrintf("Write value to BLE central");
-      strokeCharacteristic.writeValue(stroke_struct_buffer,
-                                      stroke_struct_byte_count);
+    //MicroPrintf("Write value to BLE central");
+    strokeCharacteristic.writeValue(stroke_struct_buffer,
+                                    stroke_struct_byte_count);
     }
+#endif
+    
   }
 
   if (done_just_triggered) {
@@ -733,5 +756,12 @@ void loop() {
     MicroPrintf("Found %s (%d.%d%%)", labels[max_index],
                 static_cast<int>(max_score_int),
                 static_cast<int>(max_score_frac * 100));
+
+#ifndef BLE_TRAINING_MODE
+    if (central && central.connected() && (max_score_int >= 75)) {
+      strokeCharacteristic.writeValue(atoi(labels[max_index]));
+    }  
+#endif
+
   }
 }
