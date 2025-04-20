@@ -37,6 +37,9 @@ namespace {
 
 const int VERSION = 0x00000000;
 
+unsigned long previousMillis = 0;
+const long ledInterval = 1000;
+
 constexpr int stroke_transmit_stride = 2;
 constexpr int stroke_transmit_max_length = 160;
 constexpr int stroke_max_length =
@@ -642,6 +645,14 @@ void setup() {
     MicroPrintf("Bad output tensor parameters in model");
     return;
   }
+
+  pinMode(LEDR, OUTPUT);
+  pinMode(LEDG, OUTPUT);
+  pinMode(LEDB, OUTPUT);
+  
+  digitalWrite(LEDR, LOW);          // will turn the LED white
+  digitalWrite(LEDG, LOW);          // will turn the LED white
+  digitalWrite(LEDB, LOW);          // will turn the LED white
 }
 
 void loop() {
@@ -656,6 +667,18 @@ void loop() {
     MicroPrintf("Connected to central: %s", central.address().c_str());
   }
   was_connected_last = central;
+
+  if (millis() - previousMillis > ledInterval) {
+    if (central) {
+      digitalWrite(LEDR, HIGH);         // will turn the LED blue
+      digitalWrite(LEDG, HIGH);         // will turn the LED blue
+      digitalWrite(LEDB, LOW);          // will turn the LED blue
+    } else {
+      digitalWrite(LEDR, LOW);          // will turn the LED white
+      digitalWrite(LEDG, LOW);          // will turn the LED white
+      digitalWrite(LEDB, LOW);          // will turn the LED white
+    }    
+  }
 
   const bool data_available =
       IMU.accelerationAvailable() || IMU.gyroscopeAvailable();
@@ -757,11 +780,21 @@ void loop() {
                 static_cast<int>(max_score_int),
                 static_cast<int>(max_score_frac * 100));
 
+    if (max_score_int >= 75) {
 #ifndef BLE_TRAINING_MODE
-    if (central && central.connected() && (max_score_int >= 75)) {
-      strokeCharacteristic.writeValue(atoi(labels[max_index]));
-    }  
+      if (central && central.connected()) {
+        strokeCharacteristic.writeValue(atoi(labels[max_index]));
+      }  
 #endif
+      digitalWrite(LEDR, HIGH);         // will turn the LED green
+      digitalWrite(LEDG, LOW);          // will turn the LED green
+      digitalWrite(LEDB, HIGH);         // will turn the LED green
+    } else {
+      digitalWrite(LEDR, LOW);          // will turn the LED red
+      digitalWrite(LEDG, HIGH);         // will turn the LED red
+      digitalWrite(LEDB, HIGH);         // will turn the LED red
+    }
+    previousMillis = millis();
 
   }
 }
